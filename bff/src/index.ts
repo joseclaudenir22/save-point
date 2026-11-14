@@ -1,31 +1,49 @@
-import { igdbQuery } from "./igdb";
+import { getGame, listGames, ValidationError } from "./games";
+
+const GAME_DETAIL_PATH = /^\/v1\/games\/(\d+)$/;
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
 
+    if (request.method !== "GET") {
+      return errorResponse(405, "method_not_allowed", "Only GET is supported");
+    }
+
     try {
-      if (request.method === "GET" && url.pathname === "/health") {
+      if (url.pathname === "/health") {
         return Response.json({ status: "ok" });
       }
 
-      // TEMPORÁRIA: removida na etapa 4, quando entra o /v1/games
-      if (request.method === "GET" && url.pathname === "/debug/igdb") {
-        const games = await igdbQuery<{ id: number; name: string }[]>(
-          env,
-          "games",
-          "fields name; where platforms = (130) & total_rating_count > 50; sort total_rating desc; limit 5;",
-        );
-        return Response.json(games);
+      if (url.pathname === "/v1/games") {
+        return jsonResponse(await listGames(env, url.searchParams), 300);
       }
 
-      return Response.json({ code: "not_found", message: "Route not found" }, { status: 404 });
+      const detailMatch = url.pathname.match(GAME_DETAIL_PATH);
+      if (detailMatch) {
+        const game = await getGame(env, Number(detailMatch[1]));
+        return game
+          ? jsonResponse(game, 3600)
+          : errorResponse(404, "not_found", "Game not found");
+      }
+
+      return errorResponse(404, "not_found", "Route not found");
     } catch (error) {
+      if (error instanceof ValidationError) {
+        return errorResponse(400, "invalid_parameter", error.message);
+      }
       console.error(error);
-      return Response.json(
-        { code: "upstream_error", message: "Game database unavailable" },
-        { status: 502 },
-      );
+      return errorResponse(502, "upstream_error", "Game database unavailable");
     }
   },
 } satisfies ExportedHandler<Env>;
+
+function jsonResponse(body: unknown, maxAgeSeconds: number): Response {
+  return Response.json(body, {
+    headers: { "Cache-Control": `public, max-age=${maxAgeSeconds}` },
+  });
+}
+
+function errorResponse(status: number, code: string, message: string): Response {
+  return Response.json({ code, message }, { status });
+}
